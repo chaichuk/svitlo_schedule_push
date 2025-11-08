@@ -20,12 +20,12 @@ blueprint:
     notify_service:
       name: Сервіс сповіщень (notify)
       description: >
-        Назва notify-сервісу вашого телефону, напр.:
-        notify.mobile_app_iphone_Петро або notify.mobile_app_pixel_7.
-        Якщо лишити порожнім — буде створено persistent_notification.
-      default: ""
+        Оберіть notify-сервіс вашого телефону або інший канал сповіщень.
+        Якщо не вибрано — буде створено persistent_notification.
+      default: []
       selector:
-        text:
+        entity:
+          domain: notify
     title_text:
       name: Заголовок повідомлення
       default: "Світло: графік на сьогодні"
@@ -73,7 +73,7 @@ action:
         {% endif %}
 
   - choose:
-      - conditions: "{{ notify_service | length > 0 }}"
+      - conditions: "{{ notify_service != [] }}"
         sequence:
           - service: "{{ notify_service }}"
             data:
