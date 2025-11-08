@@ -3,29 +3,38 @@ blueprint:
   domain: automation
   description: >
     Щодня о заданому часі бере події за СЬОГОДНІ з вибраного календаря
-    і надсилає push-сповіщення із зведенням (часи + назви подій).
+    і надсилає повідомлення з переліком інтервалів.
   input:
     schedule_calendar:
       name: Календар з розкладом
-      description: Оберіть календар, куди ви додаєте графік відключень
       selector:
         entity:
           domain: calendar
+
     run_time:
       name: Час надсилання
-      description: Коли надсилати щоденне повідомлення
       default: "07:00:00"
       selector:
         time:
-    notify_service:
-      name: Сервіс сповіщень (notify)
-      description: >
-        Оберіть notify-сервіс вашого телефону або інший канал сповіщень.
-        Якщо не вибрано — буде створено persistent_notification.
+
+    mobile_targets:
+      name: Телефони (Mobile App)
+      description: Оберіть один або кілька телефонів із інтеграції Mobile App
       default: []
       selector:
-        entity:
-          domain: notify
+        device:
+          integration: mobile_app
+          multiple: true
+
+    custom_notify_service:
+      name: Кастомний notify-сервіс (опційно)
+      description: >
+        Напр.: notify.telegram, notify.pushover, notify.mobile_app_pixel_7.
+        Якщо вказано — повідомлення буде надіслано сюди (ігноруючи вибрані телефони).
+      default: ""
+      selector:
+        text:
+
     title_text:
       name: Заголовок повідомлення
       default: "Світло: графік на сьогодні"
@@ -38,7 +47,8 @@ trigger:
 
 variables:
   cal_entity: !input schedule_calendar
-  notify_service: !input notify_service
+  mobile_targets: !input mobile_targets
+  custom_notify_service: !input custom_notify_service
   title_text: !input title_text
 
 action:
@@ -73,12 +83,25 @@ action:
         {% endif %}
 
   - choose:
-      - conditions: "{{ notify_service != [] }}"
+      # 1) Якщо вказано кастомний notify-сервіс — шлемо туди
+      - conditions: "{{ custom_notify_service | length > 0 }}"
         sequence:
-          - service: "{{ notify_service }}"
+          - service: "{{ custom_notify_service }}"
             data:
               title: "{{ title_text }}"
               message: "{{ body }}"
+
+      # 2) Інакше, якщо вибрані телефони Mobile App — шлемо через notify.mobile_app за device_id
+      - conditions: "{{ mobile_targets | length > 0 }}"
+        sequence:
+          - service: notify.mobile_app
+            target:
+              device_id: !input mobile_targets
+            data:
+              title: "{{ title_text }}"
+              message: "{{ body }}"
+
+      # 3) Фолбек — persistent notification у HA
       - conditions: []
         sequence:
           - service: persistent_notification.create
