@@ -1,0 +1,87 @@
+blueprint:
+  name: "Svitlo — розклад на сьогодні у пуш"
+  domain: automation
+  description: >
+    Щодня о заданому часі бере події за СЬОГОДНІ з вибраного календаря
+    і надсилає push-сповіщення із зведенням (часи + назви подій).
+  input:
+    schedule_calendar:
+      name: Календар з розкладом
+      description: Оберіть календар, куди ви додаєте графік відключень
+      selector:
+        entity:
+          domain: calendar
+    run_time:
+      name: Час надсилання
+      description: Коли надсилати щоденне повідомлення
+      default: "07:00:00"
+      selector:
+        time:
+    notify_service:
+      name: Сервіс сповіщень (notify)
+      description: >
+        Назва notify-сервісу вашого телефону, напр.:
+        notify.mobile_app_iphone_Петро або notify.mobile_app_pixel_7.
+        Якщо лишити порожнім — буде створено persistent_notification.
+      default: ""
+      selector:
+        text:
+    title_text:
+      name: Заголовок повідомлення
+      default: "Світло: графік на сьогодні"
+
+mode: single
+
+trigger:
+  - platform: time
+    at: !input run_time
+
+variables:
+  cal_entity: !input schedule_calendar
+  notify_service: !input notify_service
+  title_text: !input title_text
+
+action:
+  - service: calendar.list_events
+    data:
+      entity_id: !input schedule_calendar
+      start_date_time: "{{ now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat() }}"
+      end_date_time: "{{ now().replace(hour=23, minute=59, second=59, microsecond=0).isoformat() }}"
+    response_variable: cal_resp
+
+  - variables:
+      evs: "{{ (cal_resp.events | default([])) | sort(attribute='start') }}"
+      today_str: "{{ now().strftime('%d.%m.%Y') }}"
+      body: >-
+        {% if evs | count == 0 %}
+        Сьогодні ({{ today_str }}) подій у календарі не знайдено.
+        {% else %}
+        Графік на сьогодні ({{ today_str }}):
+        {% for e in evs %}
+        {%- set all_day = e.all_day | default(false) -%}
+        {%- set s = as_datetime(e.start) if e.start is defined else none -%}
+        {%- set eend = as_datetime(e.end) if e.end is defined else none -%}
+        {%- set s_local = s.astimezone(now().tzinfo) if s else none -%}
+        {%- set e_local = eend.astimezone(now().tzinfo) if eend else none -%}
+        - {{ e.summary | default(e.message | default('Подія')) }}:
+          {%- if all_day %} весь день
+          {%- elif s_local and e_local %} {{ s_local.strftime('%H:%M') }}–{{ e_local.strftime('%H:%M') }}
+          {%- elif s_local %} з {{ s_local.strftime('%H:%M') }}
+          {%- else %} час не вказано
+          {%- endif %}
+        {% endfor %}
+        {% endif %}
+
+  - choose:
+      - conditions: "{{ notify_service | length > 0 }}"
+        sequence:
+          - service: "{{ notify_service }}"
+            data:
+              title: "{{ title_text }}"
+              message: "{{ body }}"
+      - conditions: []
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "{{ title_text }}"
+              message: "{{ body }}"
