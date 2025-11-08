@@ -1,43 +1,36 @@
 blueprint:
-  name: "Svitlo — розклад на сьогодні у пуш"
+  name: "Сповіщення про відключення світла"
+  description: "Надсилає push-повідомлення з розкладом відключень світла на сьогодні"
   domain: automation
-  description: >
-    Щодня о заданому часі бере події за СЬОГОДНІ з вибраного календаря
-    і надсилає повідомлення з переліком інтервалів.
   input:
     schedule_calendar:
-      name: Календар з розкладом
+      name: Календар відключень
+      description: Виберіть календар з розкладом відключень світла
       selector:
         entity:
           domain: calendar
-
+    
     run_time:
-      name: Час надсилання
+      name: Час сповіщення
+      description: Час коли надсилати повідомлення щодня
       default: "07:00:00"
       selector:
         time:
-
+    
     mobile_targets:
-      name: Телефони (Mobile App)
-      description: Оберіть один або кілька телефонів із інтеграції Mobile App
+      name: Мобільні пристрої
+      description: Виберіть один або кілька телефонів для надсилання повідомлень
       default: []
       selector:
         device:
           integration: mobile_app
           multiple: true
-
-    custom_notify_service:
-      name: Кастомний notify-сервіс (опційно)
-      description: >
-        Напр.: notify.telegram, notify.pushover, notify.mobile_app_pixel_7.
-        Якщо вказано — повідомлення буде надіслано сюди (ігноруючи вибрані телефони).
-      default: ""
-      selector:
-        text:
-
+    
     title_text:
       name: Заголовок повідомлення
-      default: "Світло: графік на сьогодні"
+      default: "⚡Відключення електроенергії⚡"
+      selector:
+        text:
 
 mode: single
 
@@ -48,63 +41,74 @@ trigger:
 variables:
   cal_entity: !input schedule_calendar
   mobile_targets: !input mobile_targets
-  custom_notify_service: !input custom_notify_service
   title_text: !input title_text
 
 action:
-  - service: calendar.list_events
-    data:
+  # 1) Отримуємо події за сьогодні
+  - service: calendar.get_events
+    target:
       entity_id: !input schedule_calendar
-      start_date_time: "{{ now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat() }}"
-      end_date_time: "{{ now().replace(hour=23, minute=59, second=59, microsecond=0).isoformat() }}"
+    data:
+      start_date_time: "{{ today_at('00:00').isoformat() }}"
+      end_date_time: "{{ today_at('23:59:59').isoformat() }}"
     response_variable: cal_resp
 
+  # 2) Готуємо текст повідомлення
   - variables:
-      evs: "{{ (cal_resp.events | default([])) | sort(attribute='start') }}"
-      today_str: "{{ now().strftime('%d.%m.%Y') }}"
-      body: >-
-        {% if evs | count == 0 %}
-        Сьогодні ({{ today_str }}) подій у календарі не знайдено.
+      # Отримуємо події з відповіді
+      raw_events: >-
+        {% set r = cal_resp %}
+        {% set k = cal_entity %}
+        {% if r is mapping and (k in r) and (r[k] is mapping) and ('events' in r[k]) %}
+          {{ r[k]['events'] }}
         {% else %}
-        Графік на сьогодні ({{ today_str }}):
-        {% for e in evs %}
-        {%- set all_day = e.all_day | default(false) -%}
-        {%- set s = as_datetime(e.start) if e.start is defined else none -%}
-        {%- set eend = as_datetime(e.end) if e.end is defined else none -%}
-        {%- set s_local = s.astimezone(now().tzinfo) if s else none -%}
-        {%- set e_local = eend.astimezone(now().tzinfo) if eend else none -%}
-        - {{ e.summary | default(e.message | default('Подія')) }}:
-          {%- if all_day %} весь день
-          {%- elif s_local and e_local %} {{ s_local.strftime('%H:%M') }}–{{ e_local.strftime('%H:%M') }}
-          {%- elif s_local %} з {{ s_local.strftime('%H:%M') }}
-          {%- else %} час не вказано
-          {%- endif %}
-        {% endfor %}
+          {{ [] }}
         {% endif %}
+      
+      # Сортуємо події за часом початку
+      evs_sorted: "{{ raw_events | sort(attribute='start') }}"
+      
+      today_str: "{{ now().strftime('%d.%m.%Y') }}"
+      
+      # Формуємо текст повідомлення
+      body: >-
+        {% if evs_sorted | count == 0 -%}
+        ✅ Сьогодні ({{ today_str }}) планових відключень світла немає!
+        {%- else -%}
+        📅 Розклад на сьогодні ({{ today_str }}):
 
+        {% for e in evs_sorted -%}
+        {%- set title = e.summary | default(e.title, true) | default('Відключення світла') -%}
+        {%- set sdt = (as_datetime(e.start) if e.start is defined else none) -%}
+        {%- set edt = (as_datetime(e.end) if e.end is defined else none) -%}
+        {%- set s_loc = sdt.astimezone(now().tzinfo) if sdt else none -%}
+        {%- set e_loc = edt.astimezone(now().tzinfo) if edt else none -%}
+        🕐  {% if s_loc and e_loc %}{{ s_loc.strftime('%H:%M') }} - {{ e_loc.strftime('%H:%M') }}{% elif s_loc %}з {{ s_loc.strftime('%H:%M') }}{% else %}час не вказано{% endif %}{% if title != 'Відключення світла' %} ({{ title }}){% endif %}
+
+        {% endfor -%}
+        {%- endif -%}
+
+  # 3) Відправлення на вибрані пристрої
   - choose:
-      # 1) Якщо вказано кастомний notify-сервіс — шлемо туди
-      - conditions: "{{ custom_notify_service | length > 0 }}"
-        sequence:
-          - service: "{{ custom_notify_service }}"
-            data:
-              title: "{{ title_text }}"
-              message: "{{ body }}"
-
-      # 2) Інакше, якщо вибрані телефони Mobile App — шлемо через notify.mobile_app за device_id
+      # Якщо вибрані мобільні пристрої
       - conditions: "{{ mobile_targets | length > 0 }}"
         sequence:
-          - service: notify.mobile_app
-            target:
-              device_id: !input mobile_targets
-            data:
-              title: "{{ title_text }}"
-              message: "{{ body }}"
-
-      # 3) Фолбек — persistent notification у HA
-      - conditions: []
-        sequence:
-          - service: persistent_notification.create
-            data:
-              title: "{{ title_text }}"
-              message: "{{ body }}"
+          - repeat:
+              for_each: !input mobile_targets
+              sequence:
+                - variables:
+                    dev_name: "{{ device_attr(repeat.item, 'name') | default('unknown') }}"
+                    svc_name: "{{ 'notify.mobile_app_' ~ (dev_name | lower | replace(' ', '_') | replace('-', '_')) }}"
+                - service: "{{ svc_name }}"
+                  data:
+                    title: "{{ title_text }}"
+                    message: "{{ body }}"
+                    data:
+                      notification_icon: "mdi:power-plug-off"
+                      priority: high
+    # Якщо не вибрано жодного пристрою
+    default:
+      - service: persistent_notification.create
+        data:
+          title: "{{ title_text }}"
+          message: "{{ body }}"
